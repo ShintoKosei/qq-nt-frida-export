@@ -1,0 +1,15 @@
+RE/
+out/
+exports/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.jsonl
+windows_qq_key_summary.json
+*key_summary*.json
+*.log
+*.pid
+__pycache__/
+.venv/
+venv/
