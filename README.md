@@ -10,6 +10,13 @@
 
 > ⚠️ 只用于你自己的账号、设备和已获授权的数据。不要用于未授权访问，也不要公开上传数据库、key、JSONL、聊天语料或日志。
 
+## ✅ 已测试版本
+
+| 平台 | 已测试 QQ NT 版本 | 测试环境 | 验证内容 |
+| --- | --- | --- | --- |
+| Windows | `9.9.32-50828` | Windows QQ NT | 抓取 16 位 key、复制数据库、SQLCipher CLI 解密、提取本人消息 |
+| Android | `9.3.1` (`versionCode=14378`) | `com.tencent.mobileqq` / PLK110 / arm64 | Frida hook `libkernel.so`，导出明文 `qq_nt_msg_plaintext.db` |
+
 ## 📦 脚本命名
 
 | 脚本 | 平台 | 作用 |
@@ -73,11 +80,13 @@ python scripts\qqnt_windows_export.py --kill-qq-first --account YOUR_QQ_NUMBER -
 python scripts\qqnt_windows_export.py --kill-qq-first --account YOUR_QQ_NUMBER --outdir RE\windows_qq_export --no-extract
 ```
 
-已在本机 `QQ 9.9.32-50828` 验证：脚本可抓到 16 位 key，复制 5 个数据库相关文件，导出明文 `nt_msg_plaintext.db`，并提取本人消息 JSONL/语料。
+已在 Windows QQ NT `9.9.32-50828` 验证：脚本可抓到 16 位 key，复制 5 个数据库相关文件，导出明文 `nt_msg_plaintext.db`，并提取本人消息 JSONL/语料。
 
 ## 🤖 Android QQ NT 导出
 
 Android 脚本会等待 `libkernel.so`，解析 QQ NT 导入的 `nt_sqlite3_exec` / `nt_sqlite3_prepare_v2` / `nt_sqlite3_open_v2`，识别活跃的 `nt_msg.db` 句柄，然后执行 `sqlcipher_export`。
+
+已在 Android QQ `9.3.1` (`versionCode=14378`) 验证：脚本可 hook `libkernel.so` 并导出明文 `qq_nt_msg_plaintext.db`。
 
 启动 QQ 并注入：
 
