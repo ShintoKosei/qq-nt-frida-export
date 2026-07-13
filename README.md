@@ -133,6 +133,7 @@ python scripts\qqnt_extract_self_messages.py --db RE\qq_nt_msg_plaintext.db --ac
 ## 🔎 相似项目
 
 - [artiga033/ntdb_unwrap](https://github.com/artiga033/ntdb_unwrap)：面向 NTQQ 数据库的一键解密/解析工具，提供 Rust 实现，可作为不同实现路线的参考。
+- [miniyu157/qq-dump](https://github.com/miniyu157/qq-dump)：Android 端 NTQQ 数据库密钥提取、解密与聊天记录导出工具，强调速度和移动端 I/O 友好。
 
 ## 📄 License
 

@@ -133,6 +133,7 @@ Output files:
 ## 🔎 Similar Projects
 
 - [artiga033/ntdb_unwrap](https://github.com/artiga033/ntdb_unwrap): a Rust-based one-click decrypt/parse tool for NTQQ databases, useful as a reference for a different implementation approach.
+- [miniyu157/qq-dump](https://github.com/miniyu157/qq-dump): an Android-side NTQQ database key extraction, decryption, and chat history export tool focused on speed and mobile-friendly I/O.
 
 ## 📄 License
 
