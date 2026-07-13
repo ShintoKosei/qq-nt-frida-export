@@ -9,7 +9,8 @@
 4. 默认使用 Windows Debug API 在 QQ 启动早期下断点，从 x64 第三参数 R8 读取数据库 key。
 5. 获取 key 后复制 ``nt_msg.db`` 及 WAL/SHM/material sidecar 到输出目录。
 
-脚本默认会调用 SQLCipher CLI 导出明文库；如果 `sqlcipher.exe` 不在 PATH，
+脚本默认优先使用 ``rotki-pysqlcipher3`` 导出明文库；如果当前 Python
+环境没有可用的 pysqlcipher3，则回退到 SQLCipher CLI。若 CLI 不在 PATH，
 请通过 ``--sqlcipher`` 传入真实可执行文件路径。
 """
 
@@ -1169,6 +1170,68 @@ def resolve_sqlcipher(preferred: str | None) -> str | None:
     return None
 
 
+def load_pysqlcipher3():
+    try:
+        from pysqlcipher3 import dbapi2 as sqlcipher
+    except ImportError as exc:
+        raise ScriptError(
+            "当前 Python 环境未安装 rotki-pysqlcipher3。"
+            "可在 Python 3.11/3.12 环境执行：python -m pip install rotki-pysqlcipher3"
+        ) from exc
+    return sqlcipher
+
+
+def has_pysqlcipher3() -> bool:
+    try:
+        load_pysqlcipher3()
+    except ScriptError:
+        return False
+    return True
+
+
+def choose_decrypt_backend(requested: str, sqlcipher_arg: str | None) -> tuple[str, str | None]:
+    if requested == "python":
+        load_pysqlcipher3()
+        return "python", None
+
+    if requested == "cli":
+        sqlcipher_exe = resolve_sqlcipher(sqlcipher_arg)
+        if not sqlcipher_exe:
+            raise_sqlcipher_not_found()
+        return "cli", sqlcipher_exe
+
+    if has_pysqlcipher3():
+        return "python", None
+
+    sqlcipher_exe = resolve_sqlcipher(sqlcipher_arg)
+    if sqlcipher_exe:
+        return "cli", sqlcipher_exe
+
+    raise ScriptError(
+        "未找到可用解密后端。优先方案：在 Python 3.11/3.12 环境安装 rotki-pysqlcipher3；"
+        "备用方案：下载 SQLCipher CLI，并用 --sqlcipher 指定真实路径。"
+        "QQBackup 提供的 Win64 CLI 可从 "
+        "https://github.com/QQBackup/sqlcipher-github-actions/releases/latest 下载。"
+    )
+
+
+def raise_sqlcipher_not_found() -> None:
+    raise ScriptError(
+        "未找到 sqlcipher 可执行文件。请下载 SQLCipher CLI，并用 --sqlcipher 指定真实路径；"
+        "不要直接复制 README 里的占位路径。"
+        "QQBackup 提供的 Win64 版本可从 "
+        "https://github.com/QQBackup/sqlcipher-github-actions/releases/latest 下载。"
+    )
+
+
+def apply_qq_sqlcipher_pragmas(cursor, key: str) -> None:
+    cursor.execute(f"PRAGMA key = '{shell_quote_sql(key)}';")
+    cursor.execute("PRAGMA cipher_page_size = 4096;")
+    cursor.execute("PRAGMA kdf_iter = 4000;")
+    cursor.execute("PRAGMA cipher_hmac_algorithm = HMAC_SHA1;")
+    cursor.execute("PRAGMA cipher_default_kdf_algorithm = PBKDF2_HMAC_SHA512;")
+
+
 def export_with_sqlcipher(sqlcipher: str, encrypted_db: Path, plaintext_db: Path, key: str) -> None:
     plaintext_db.parent.mkdir(parents=True, exist_ok=True)
     if plaintext_db.exists():
@@ -1201,6 +1264,23 @@ def export_with_sqlcipher(sqlcipher: str, encrypted_db: Path, plaintext_db: Path
         raise ScriptError(f"无法运行 SQLCipher: {sqlcipher}。请确认 --sqlcipher 指向真实存在的 exe 文件。") from exc
     if proc.returncode != 0:
         raise ScriptError(f"sqlcipher 执行失败，退出码 {proc.returncode}: {proc.stderr.strip() or proc.stdout.strip()}")
+
+
+def export_with_pysqlcipher3(encrypted_db: Path, plaintext_db: Path, key: str) -> None:
+    sqlcipher = load_pysqlcipher3()
+    plaintext_db.parent.mkdir(parents=True, exist_ok=True)
+    if plaintext_db.exists():
+        plaintext_db.unlink()
+
+    con = sqlcipher.connect(str(encrypted_db))
+    try:
+        cur = con.cursor()
+        apply_qq_sqlcipher_pragmas(cur, key)
+        cur.execute(f"ATTACH DATABASE '{shell_quote_sql(str(plaintext_db))}' AS plaintext KEY '';")
+        cur.execute("SELECT sqlcipher_export('plaintext');")
+        cur.execute("DETACH DATABASE plaintext;")
+    finally:
+        con.close()
 
 
 def run_self_message_extractor(plaintext_db: Path, account: str, outdir: Path) -> None:
@@ -1258,6 +1338,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=180.0, help="等待 key 的秒数，默认 180。")
     parser.add_argument("--accept-key-lengths", type=parse_accept_lengths, default={16}, help="接受的 key 长度，逗号分隔，默认 16。")
     parser.add_argument("--no-decrypt", action="store_true", help="跳过 SQLCipher 自动解密。")
+    parser.add_argument(
+        "--decrypt-backend",
+        choices=("auto", "python", "cli"),
+        default="auto",
+        help="解密后端：auto 优先 rotki-pysqlcipher3，失败则用 CLI；python 强制 pysqlcipher3；cli 强制 SQLCipher CLI。",
+    )
     parser.add_argument("--export-plaintext", action="store_true", help="兼容旧参数；当前默认会自动解密。")
     parser.add_argument("--sqlcipher", nargs="?", const="sqlcipher", help="SQLCipher 可执行文件路径或命令名。")
     parser.add_argument("--plaintext-db", help="明文数据库输出路径，默认 <outdir>/nt_msg_plaintext.db。")
@@ -1290,14 +1376,10 @@ def main(argv: list[str] | None = None) -> int:
     outdir.mkdir(parents=True, exist_ok=True)
 
     will_decrypt = not args.no_decrypt and not args.no_copy_db
-    sqlcipher_exe = resolve_sqlcipher(args.sqlcipher) if will_decrypt else None
-    if will_decrypt and not sqlcipher_exe:
-        raise ScriptError(
-            "未找到 sqlcipher 可执行文件。请下载 SQLCipher CLI，并用 --sqlcipher 指定真实路径；"
-            "不要直接复制 README 里的占位路径。"
-            "QQBackup 提供的 Win64 版本可从 "
-            "https://github.com/QQBackup/sqlcipher-github-actions/releases/latest 下载。"
-        )
+    decrypt_backend = None
+    sqlcipher_exe = None
+    if will_decrypt:
+        decrypt_backend, sqlcipher_exe = choose_decrypt_backend(args.decrypt_backend, args.sqlcipher)
 
     if args.kill_qq_first and args.pid is None and not args.attach_running:
         print("[*] 正在结束已有 QQ.exe 进程。", flush=True)
@@ -1354,8 +1436,12 @@ def main(argv: list[str] | None = None) -> int:
         print("[*] 正在移除 QQ NT 数据库前 1024 字节 header。")
         strip_qq_database_header(encrypted_db, stripped_db)
         print(f"已生成 SQLCipher 输入库: {stripped_db}")
-        print("[*] 正在使用 SQLCipher 导出明文 SQLite 数据库。")
-        export_with_sqlcipher(sqlcipher_exe, stripped_db, plaintext_db, hook_result.key)
+        if decrypt_backend == "python":
+            print("[*] 正在使用 rotki-pysqlcipher3 导出明文 SQLite 数据库。")
+            export_with_pysqlcipher3(stripped_db, plaintext_db, hook_result.key)
+        else:
+            print("[*] 正在使用 SQLCipher CLI 导出明文 SQLite 数据库。")
+            export_with_sqlcipher(str(sqlcipher_exe), stripped_db, plaintext_db, hook_result.key)
         print(f"明文数据库已导出到 {plaintext_db}")
 
         if not args.no_extract and args.account:
@@ -1380,6 +1466,8 @@ def main(argv: list[str] | None = None) -> int:
         "copied_files": [str(path) for path in copied],
         "stripped_db": str(stripped_db) if stripped_db else None,
         "plaintext_db": str(plaintext_db) if plaintext_db else None,
+        "decrypt_backend": decrypt_backend,
+        "sqlcipher": str(sqlcipher_exe) if sqlcipher_exe else None,
         "extract_outdir": str(extract_outdir) if extract_outdir else None,
     }
     write_summary(outdir / "windows_qq_key_summary.json", summary)
